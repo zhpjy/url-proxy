@@ -22,7 +22,7 @@
 docker run -d \
   -p 3000:3000 \
   -e PASSWORD=your_secret_password \
-  ghcr.io/your-username/url-proxy:latest
+  ghcr.io/zhpjy/url-proxy:latest
 ```
 
 ### 本地运行
