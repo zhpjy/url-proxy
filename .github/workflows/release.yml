@@ -16,32 +16,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-musl:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install musl tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Build musl binary
-        run: cargo build --target x86_64-unknown-linux-musl --release
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: target/x86_64-unknown-linux-musl/release/url-proxy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-docker:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,10 +41,26 @@ jobs:
             type=ref,event=tag
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
-      - name: Build and push Docker image
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=/tmp/image.tar
+
+      - name: Extract binary from Docker image
+        run: |
+          docker load -i /tmp/image.tar
+          docker create --name temp-container ${{ steps.meta.outputs.tags }}
+          docker cp temp-container:/url-proxy ./url-proxy
+          docker rm temp-container
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: url-proxy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
