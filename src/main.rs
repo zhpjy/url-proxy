@@ -38,8 +38,7 @@ async fn main() {
 
 async fn handler(Path(path): Path<String>, request: Request) -> impl IntoResponse {
     if PASSWORD.is_empty() || !path.starts_with(&*PASSWORD) {
-        warn!("Unauthorized access attempt: {}", path);
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        return handler_404().await.into_response();
     }
     
     info!("Authorized access: {}", path);
