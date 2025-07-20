@@ -19,7 +19,7 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - name: Checkout
@@ -61,7 +61,7 @@ jobs:
           docker rm temp-container
 
       - name: Release
-        uses: softprops/action-gh-release@v2
+        uses: pipe-cd/actions-gh-release@v2.3.4
         with:
-          files: |
-            url-proxy
+          release_file: url-proxy
+          token: ${{ secrets.GITHUB_TOKEN }}
