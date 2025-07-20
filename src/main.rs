@@ -20,6 +20,12 @@ async fn main() {
     // Initialize tracing
     tracing_subscriber::fmt::init();
     
+    //check if password is set
+    if PASSWORD.is_empty() {
+        warn!("PASSWORD environment variable is required.");
+        std::process::exit(1);
+    }
+    
     info!("Starting server on 127.0.0.1:3000");
     
     // build our application with a route
