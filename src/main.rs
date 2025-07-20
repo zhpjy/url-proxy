@@ -26,7 +26,11 @@ async fn main() {
         std::process::exit(1);
     }
     
-    info!("Starting server on 0.0.0.0:3000");
+    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let bind_addr = format!("{}:{}", host, port);
+    
+    info!("Starting server on {}", bind_addr);
     
     // build our application with a route
     let app = Router::new().route("/{*path}", any(handler));
@@ -35,7 +39,7 @@ async fn main() {
     let app = app.fallback(handler_404);
 
     // run it
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap();
 

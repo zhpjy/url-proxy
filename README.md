@@ -15,6 +15,8 @@
 ### 环境变量
 
 - `PASSWORD`: 必需，用于访问验证的密码
+- `HOST`: 可选，服务器绑定地址，默认为 `0.0.0.0`
+- `PORT`: 可选，服务器端口，默认为 `3000`
 
 ### 使用 Docker 运行
 
@@ -22,17 +24,21 @@
 docker run -d \
   -p 3000:3000 \
   -e PASSWORD=your_secret_password \
+  -e HOST=0.0.0.0 \
+  -e PORT=3000 \
   ghcr.io/zhpjy/url-proxy:latest
 ```
 
-### 本地运行
+### 本地编译运行
 
 ```bash
 # 设置环境变量
 export PASSWORD=your_secret_password
+export HOST=127.0.0.1  # 可选，默认 0.0.0.0
+export PORT=8080       # 可选，默认 3000
 
-# 运行
-./url-proxy
+# 编译并运行
+cargo run
 ```
 
 ## 使用方法
