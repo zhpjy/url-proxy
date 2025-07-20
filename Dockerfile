@@ -19,8 +19,7 @@ COPY src ./src
 RUN rustup target add x86_64-unknown-linux-musl
 RUN cargo build --target x86_64-unknown-linux-musl --release
 
-# Runtime stage - use scratch for minimal image
-FROM scratch
+FROM alpine
 
 # Copy the statically linked binary
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/url-proxy /url-proxy
