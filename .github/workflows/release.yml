@@ -60,10 +60,9 @@ jobs:
           docker cp temp-container:/url-proxy ./url-proxy
           docker rm temp-container
 
-      - name: Create Release
+      - name: Release
         uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: url-proxy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            url-proxy
