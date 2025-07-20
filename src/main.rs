@@ -26,7 +26,7 @@ async fn main() {
         std::process::exit(1);
     }
     
-    info!("Starting server on 127.0.0.1:3000");
+    info!("Starting server on 0.0.0.0:3000");
     
     // build our application with a route
     let app = Router::new().route("/{*path}", any(handler));
@@ -35,7 +35,7 @@ async fn main() {
     let app = app.fallback(handler_404);
 
     // run it
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .unwrap();
 
