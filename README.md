@@ -29,7 +29,7 @@ docker run -d \
   ghcr.io/zhpjy/url-proxy:latest
 ```
 
-### 本地编译运行
+### 直接运行
 
 ```bash
 # 设置环境变量
@@ -37,8 +37,7 @@ export PASSWORD=your_secret_password
 export HOST=127.0.0.1  # 可选，默认 0.0.0.0
 export PORT=8080       # 可选，默认 3000
 
-# 编译并运行
-cargo run
+./url-proxy
 ```
 
 ## 使用方法
