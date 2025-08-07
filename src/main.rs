@@ -17,11 +17,11 @@ static PASSWORD: LazyLock<String> = LazyLock::new(|| {
 });
 
 static RE_HTTP: LazyLock<Regex> = LazyLock::new(|| {
-     regex::Regex::new(r"^http:\/").unwrap()
+     regex::Regex::new(r"^http:\/{1,2}").unwrap()
 });
 
 static RE_HTTPS: LazyLock<Regex> = LazyLock::new(|| {
-     regex::Regex::new(r"^https:\/").unwrap()
+     regex::Regex::new(r"^https:\/{1,2}").unwrap()
 });
 
 #[tokio::main]
