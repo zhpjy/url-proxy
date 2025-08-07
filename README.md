@@ -40,6 +40,16 @@ export PORT=8080       # 可选，默认 3000
 ./url-proxy
 ```
 
+### 指定代理
+支持使用代理访问目标 URL.支持 http、socks5 协议。设置环境变量即可，示例：
+```bash
+#支持 http 代理
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+#支持 socks 代理
+export http_proxy=socks5h://127.0.0.1:7890
+export https_proxy=socks5h://127.0.0.1:7890
+```
 ## 使用方法
 
 启动服务后，通过以下格式访问目标 URL：
