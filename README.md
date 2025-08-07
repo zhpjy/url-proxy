@@ -24,8 +24,6 @@
 docker run -d \
   -p 3000:3000 \
   -e PASSWORD=your_secret_password \
-  -e HOST=0.0.0.0 \
-  -e PORT=3000 \
   ghcr.io/zhpjy/url-proxy:latest
 ```
 
@@ -34,8 +32,6 @@ docker run -d \
 ```bash
 # 设置环境变量
 export PASSWORD=your_secret_password
-export HOST=127.0.0.1  # 可选，默认 0.0.0.0
-export PORT=8080       # 可选，默认 3000
 
 ./url-proxy
 ```
