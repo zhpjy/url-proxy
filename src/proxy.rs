@@ -6,6 +6,9 @@ use axum::{
 use http_body_util::BodyStream;
 use futures_util::TryStreamExt;
 use tracing::{error, info};
+use std::sync::LazyLock;
+
+static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 pub async fn proxy_request(
     method: Method,
@@ -18,9 +21,6 @@ pub async fn proxy_request(
     let target_url = format!("{}{}", new_path, query_string);
 
     info!("Proxying {} request to: {}", method, target_url);
-
-    // Create HTTP client
-    let client = reqwest::Client::new();
 
     // Convert the axum Body into a stream of bytes for reqwest.
     // BodyStream yields Result<Frame<Bytes>, Error>.
@@ -35,7 +35,7 @@ pub async fn proxy_request(
     let reqwest_body = reqwest::Body::wrap_stream(stream);
 
     // Build the request
-    let mut request_builder = client.request(method, &target_url).body(reqwest_body);
+    let mut request_builder = CLIENT.request(method, &target_url).body(reqwest_body);
 
     // Copy headers, letting reqwest handle connection-level headers.
     // We remove the 'host' header as it's for the proxy server itself.
