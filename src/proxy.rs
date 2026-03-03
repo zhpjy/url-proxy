@@ -1,11 +1,14 @@
 use axum::{
     body::Body,
-    http::{HeaderMap, Method, StatusCode, },
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
 };
-use http_body_util::BodyStream;
 use futures_util::TryStreamExt;
+use http_body_util::BodyStream;
+use std::sync::LazyLock;
 use tracing::{error, info};
+
+static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 pub async fn proxy_request(
     method: Method,
@@ -19,30 +22,26 @@ pub async fn proxy_request(
 
     info!("Proxying {} request to: {}", method, target_url);
 
-    // Create HTTP client
-    let client = reqwest::Client::new();
-
     // Convert the axum Body into a stream of bytes for reqwest.
     // BodyStream yields Result<Frame<Bytes>, Error>.
     let body_stream = BodyStream::new(body);
     // We need to filter out trailer frames and extract bytes from data frames.
-    let stream_of_bytes = body_stream.try_filter_map(|frame| async move {
-        Ok(frame.into_data().ok())
-    });
+    let stream_of_bytes =
+        body_stream.try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
     // Map the error type to what reqwest::Body::wrap_stream expects.
-    let stream = stream_of_bytes.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+    let stream =
+        stream_of_bytes.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
 
     let reqwest_body = reqwest::Body::wrap_stream(stream);
 
     // Build the request
-    let mut request_builder = client.request(method, &target_url).body(reqwest_body);
+    let mut request_builder = CLIENT.request(method, &target_url).body(reqwest_body);
 
     // Copy headers, letting reqwest handle connection-level headers.
     // We remove the 'host' header as it's for the proxy server itself.
     let mut new_headers = headers.clone();
     new_headers.remove("host");
     request_builder = request_builder.headers(new_headers);
-
 
     // Execute the request
     match request_builder.send().await {
@@ -67,7 +66,11 @@ pub async fn proxy_request(
                 Ok(final_response) => final_response.into_response(),
                 Err(e) => {
                     error!("Failed to construct response: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to construct response").into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to construct response",
+                    )
+                        .into_response()
                 }
             }
         }
