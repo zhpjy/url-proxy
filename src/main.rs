@@ -75,11 +75,11 @@ async fn handler(Path(path): Path<String>, request: Request) -> impl IntoRespons
 
     
     // Extract request components
-    let method = request.method().clone();
-    let uri = request.uri().clone();
-    let headers = request.headers().clone();
-    let body = request.into_body();
-    
+    let (parts, body) = request.into_parts();
+    let method = parts.method;
+    let uri = parts.uri;
+    let headers = parts.headers;
+
     // Call proxy function
     proxy::proxy_request(method, new_path_protocol.as_str(), uri.query(), headers, body).await.into_response()
 }

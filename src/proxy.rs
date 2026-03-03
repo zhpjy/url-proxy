@@ -11,7 +11,7 @@ pub async fn proxy_request(
     method: Method,
     new_path: &str,
     query: Option<&str>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
     let query_string = query.map(|q| format!("?{}", q)).unwrap_or_default();
@@ -39,9 +39,8 @@ pub async fn proxy_request(
 
     // Copy headers, letting reqwest handle connection-level headers.
     // We remove the 'host' header as it's for the proxy server itself.
-    let mut new_headers = headers.clone();
-    new_headers.remove("host");
-    request_builder = request_builder.headers(new_headers);
+    headers.remove("host");
+    request_builder = request_builder.headers(headers);
 
 
     // Execute the request
