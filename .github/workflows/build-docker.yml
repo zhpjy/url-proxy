@@ -15,6 +15,11 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Serialize publishes from main so an older build cannot overwrite latest.
+concurrency:
+  group: docker-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
@@ -132,6 +137,8 @@ jobs:
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
 
   build-docker:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -429,7 +436,10 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare-release.outputs.release_tag }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.prepare-release.outputs.release_tag }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
 
       - name: Publish GitHub Release
         shell: bash
