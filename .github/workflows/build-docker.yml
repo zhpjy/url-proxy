@@ -2,12 +2,12 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag version (e.g., v1.0.0)'
+        description: 'Docker image tag to publish (no latest update or GitHub Release; e.g., test-2026-08-09)'
         required: true
         type: string
 
@@ -16,10 +16,125 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-docker:
+  prepare-release:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      should_release: ${{ steps.candidate.outputs.should_release }}
+      release_tag: ${{ steps.candidate.outputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect release candidate
+        id: candidate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+
+          echo "should_release=false" >> "$GITHUB_OUTPUT"
+          echo "release_tag=" >> "$GITHUB_OUTPUT"
+
+          if [[ "$EVENT_NAME" != "push" || "$REF" != "refs/heads/main" ]]; then
+            exit 0
+          fi
+
+          if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+            echo "No usable push before commit; skipping formal release."
+            exit 0
+          fi
+
+          version_info="$(python3 - "$BEFORE" <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          before = sys.argv[1]
+
+          try:
+              with open("Cargo.toml", "rb") as current_file:
+                  current = tomllib.load(current_file)
+              previous_text = subprocess.check_output(
+                  ["git", "show", f"{before}:Cargo.toml"],
+                  stderr=subprocess.DEVNULL,
+              )
+              previous = tomllib.loads(previous_text.decode("utf-8"))
+              current_version = current["package"]["version"]
+              previous_version = previous["package"]["version"]
+          except (KeyError, OSError, subprocess.CalledProcessError, UnicodeDecodeError,
+                  tomllib.TOMLDecodeError):
+              # A missing/unavailable before commit is expected on an initial push.
+              sys.exit(0)
+
+          if not isinstance(current_version, str) or current_version == previous_version:
+              sys.exit(0)
+
+          print(current_version)
+          PY
+          )"
+
+          if [[ -z "$version_info" ]]; then
+            echo "Cargo package version did not change; skipping formal release."
+            exit 0
+          fi
+
+          if [[ ! "$version_info" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Cargo package version ${version_info} is not an X.Y.Z release; skipping formal release."
+            exit 0
+          fi
+
+          release_tag="v${version_info}"
+          set +e
+          remote_tag_refs="$(git ls-remote --exit-code origin \
+            "refs/tags/${release_tag}" \
+            "refs/tags/${release_tag}^{}" 2>&1)"
+          remote_status=$?
+          set -e
+
+          if [[ "$remote_status" != "0" && "$remote_status" != "2" ]]; then
+            echo "Unable to determine whether ${release_tag} exists on origin:" >&2
+            printf '%s\n' "$remote_tag_refs" >&2
+            exit "$remote_status"
+          fi
+
+          tag_commit=""
+          peeled_commit=""
+          while IFS=$'\t' read -r commit ref; do
+            if [[ "$ref" == "refs/tags/${release_tag}" ]]; then
+              tag_commit="$commit"
+            elif [[ "$ref" == "refs/tags/${release_tag}^{}" ]]; then
+              peeled_commit="$commit"
+            fi
+          done <<< "$remote_tag_refs"
+
+          if [[ -z "$tag_commit" ]]; then
+            echo "No remote ${release_tag} tag found; release candidate detected."
+          else
+            if [[ -z "$peeled_commit" ]]; then
+              echo "Remote ${release_tag} has no peeled commit; refusing to reuse it." >&2
+              exit 1
+            fi
+            if [[ "$peeled_commit" != "$GITHUB_SHA" ]]; then
+              echo "Remote ${release_tag} points to ${peeled_commit}, not ${GITHUB_SHA}; refusing to reuse the version." >&2
+              exit 1
+            fi
+            echo "Remote ${release_tag} already points to this commit; allowing a safe retry."
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+
+  build-docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
       packages: write
     steps:
       - name: Checkout
@@ -33,22 +148,294 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Extract metadata
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=tag
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=latest
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=sha,format=long,prefix=sha-,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      - name: Build Docker image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  build-release-assets:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: url-proxy.exe
+            archive_extension: zip
+            use_cross: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: url-proxy
+            archive_extension: tar.gz
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: url-proxy
+            archive_extension: tar.gz
+            use_cross: true
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary: url-proxy
+            archive_extension: tar.gz
+            use_cross: false
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain and target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cross --locked
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build release binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.use_cross }}
+        run: |
+          set -euo pipefail
+          if [[ "$USE_CROSS" == "true" ]]; then
+            cross build --locked --release --target "$TARGET"
+          else
+            cargo build --locked --release --target "$TARGET"
+          fi
+
+      - name: Package Windows release asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = "url-proxy-$($env:RELEASE_TAG)-$($env:TARGET).zip"
+          $binaryPath = Join-Path $env:GITHUB_WORKSPACE "target/$($env:TARGET)/release/$($env:BINARY)"
+          $staging = Join-Path $env:GITHUB_WORKSPACE 'asset-root'
+          $assetPath = Join-Path $env:GITHUB_WORKSPACE $asset
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item -Path $binaryPath -Destination (Join-Path $staging $env:BINARY)
+          Push-Location $staging
+          try {
+            Compress-Archive -Path $env:BINARY -DestinationPath $assetPath
+          } finally {
+            Pop-Location
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $assetPath).Hash.ToLowerInvariant()
+          "$hash  $asset" | Set-Content -NoNewline -Encoding ascii (Join-Path $env:GITHUB_WORKSPACE "$asset.sha256")
+
+      - name: Package Unix release asset
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+          RUNNER_OS: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          ASSET="url-proxy-${RELEASE_TAG}-${TARGET}.tar.gz"
+          binary_path="target/${TARGET}/release/${BINARY}"
+          tar -czf "$ASSET" -C "$(dirname "$binary_path")" "$(basename "$binary_path")"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            checksum_line="$(shasum -a 256 "$ASSET")"
+          else
+            checksum_line="$(sha256sum "$ASSET")"
+          fi
+          checksum="${checksum_line%% *}"
+          checksum="$(printf '%s' "$checksum" | tr '[:upper:]' '[:lower:]')"
+          printf '%s  %s\n' "$checksum" "$ASSET" > "$ASSET.sha256"
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-${{ matrix.target }}
+          path: |
+            url-proxy-${{ needs.prepare-release.outputs.release_tag }}-${{ matrix.target }}.${{ matrix.archive_extension }}
+            url-proxy-${{ needs.prepare-release.outputs.release_tag }}-${{ matrix.target }}.${{ matrix.archive_extension }}.sha256
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - prepare-release
+      - build-release-assets
+    if: needs.prepare-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check or create annotated release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          set +e
+          remote_tag_refs="$(git ls-remote --exit-code origin \
+            "refs/tags/${RELEASE_TAG}" \
+            "refs/tags/${RELEASE_TAG}^{}" 2>&1)"
+          remote_status=$?
+          set -e
+          if [[ "$remote_status" != "0" && "$remote_status" != "2" ]]; then
+            echo "Unable to query remote ${RELEASE_TAG} tag:" >&2
+            printf '%s\n' "$remote_tag_refs" >&2
+            exit "$remote_status"
+          fi
+
+          tag_commit=""
+          peeled_commit=""
+          while IFS=$'\t' read -r commit ref; do
+            if [[ "$ref" == "refs/tags/${RELEASE_TAG}" ]]; then
+              tag_commit="$commit"
+            elif [[ "$ref" == "refs/tags/${RELEASE_TAG}^{}" ]]; then
+              peeled_commit="$commit"
+            fi
+          done <<< "$remote_tag_refs"
+
+          if [[ -z "$tag_commit" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag --annotate "$RELEASE_TAG" "$GITHUB_SHA" --message "Release $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          else
+            if [[ -z "$peeled_commit" ]]; then
+              echo "Remote ${RELEASE_TAG} has no peeled commit; refusing to reuse it." >&2
+              exit 1
+            fi
+            if [[ "$peeled_commit" != "$GITHUB_SHA" ]]; then
+              echo "Remote ${RELEASE_TAG} points to ${peeled_commit}, not ${GITHUB_SHA}; refusing to reuse it." >&2
+              exit 1
+            fi
+            echo "Remote ${RELEASE_TAG} already points to this commit; continuing the retry."
+          fi
+
+      - name: Ensure draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          set +e
+          release_state="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft \
+            --template '{{.isDraft}}' 2>&1)"
+          release_status=$?
+          set -e
+
+          if [[ "$release_status" == "0" ]]; then
+            if [[ "$release_state" != "true" ]]; then
+              echo "GitHub Release ${RELEASE_TAG} already exists and is public; refusing to overwrite it." >&2
+              exit 1
+            fi
+            echo "GitHub Release ${RELEASE_TAG} is already a draft; continuing the retry."
+          else
+            normalized_state="$(printf '%s' "$release_state" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$normalized_state" != *"not found"* ]]; then
+              echo "Unable to query GitHub Release ${RELEASE_TAG}:" >&2
+              printf '%s\n' "$release_state" >&2
+              exit "$release_status"
+            fi
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate release asset count
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [[ "${#assets[@]}" -ne 8 ]]; then
+            echo "Expected exactly 8 release asset files, found ${#assets[@]}." >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Release asset path is not a regular file: $asset" >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push version Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare-release.outputs.release_tag }}
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
